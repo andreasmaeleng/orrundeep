@@ -182,10 +182,11 @@ function drawTitle() {
   const has = !!store.get(LS.save); let y = 21;
   const opt = (k, s, on) => { ctext(y++, '[' + k + '] ' + s, on === false ? C.dg : C.w, true); };
   opt('N', 'New descent      ', true); opt('C', 'Continue         ', has); opt('D', 'Daily seed       ', true); opt('H', 'Hall of the dead ', true); opt('?', 'How to play      ', true);
-  ctext(28, 'Permadeath · 20 levels · 4 races · 4 classes · 12 spells · 60 creatures · town & shops', C.dg);
+  ctext(28, 'Permadeath · 20 levels · 4 races · 4 classes · 12 spells · 59 creatures · town & shops', C.dg);
   ctext(30, 'Keyboard: arrows / numpad / hjklyubn.   F2 toggles scanlines.   No ads, no tracking, no account.', C.dg);
+  if (ui.confirmNew) ctext(26, 'A saved descent exists. Press Y to abandon it, any other key to keep it.', C.y, true);
   const u = new URLSearchParams(location.search).get('seed'); if (u) ctext(32, 'Seed from link: "' + u + '" — press N to play it.', C.lb);
-  ctext(ROWS - 2, 'v1.0 · MIT licence · source on GitHub', '#3f3c35');
+  ctext(ROWS - 2, 'v1.1 · MIT licence · source on GitHub', '#3f3c35');
 }
 function drawCreate() {
   const c = ui.create; ctext(3, 'A NEW DESCENT', C.gold, true); let y = 6;
@@ -220,15 +221,15 @@ ui.fxn = 0;
 function doAct(fn) { OD.act(fn); after(); }
 function onDeath() {
   const g = OD.g; ui.menu = null; ui.tg = null; ui.look = null;
-  if (!g.recorded) { g.recorded = 1; const S = scores(); S.push({ s: OD.score(), n: g.p.name, r: g.p.race, c: g.p.cls, l: g.p.lvl, d: g.maxDepth, w: g.dead.retired ? 1 : 0, by: g.dead.cause, seed: g.seed, t: Date.now() }); S.sort((a, b) => b.s - a.s); store.set(LS.scores, JSON.stringify(S.slice(0, 15))); store.del(LS.save); }
+  if (!g.recorded) { g.recorded = 1; const S = scores(); S.push({ s: OD.score(), n: g.p.name, r: g.p.race, c: g.p.cls, l: g.p.lvl, d: g.maxDepth, dd: g.dead.depth, w: g.dead.retired ? 1 : 0, cr: g.crownHome ? 1 : 0, by: g.dead.retired ? '' : OD.withArticle(g.dead.cause), seed: g.seed, t: Date.now() }); S.sort((a, b) => b.s - a.s); store.set(LS.scores, JSON.stringify(S.slice(0, 15))); store.del(LS.save); }
   const won = g.dead.retired; const art = won ? ['       .   *   .', '    *   \\  |  /   *', '   --   VICTORY   --', '    *   /  |  \\   *', '       .   *   .'] :
     ['        _________', '       /         \\', '      /   R.I.P.  \\', '      |           |', '      |           |', '     _|___________|_'];
   const lines = art.map(a => [a, won ? C.gold : C.gy]).concat([''], OD.morgue().split('\n').map((l, i) => [l, i === 0 ? C.gold : i === 1 ? (won ? C.gold : C.r) : C.w]));
-  ui.mode = 'play'; ui.text = { lines, off: 0, footer: 'C: copy to clipboard   N: new game', dead: true }; render();
+  ui.mode = 'play'; ui.text = { lines, off: 0, footer: 'C: copy to clipboard   Shift+N or Enter: new game', dead: true, t0: Date.now() }; render();
 }
 function shareText() { const g = OD.g; return OD.morgue() + '\n\nPlay the same dungeon: ' + location.origin + location.pathname + '?seed=' + encodeURIComponent(g.seed); }
 function copy(s) { if (navigator.clipboard) navigator.clipboard.writeText(s).then(() => flash('Copied to clipboard.'), () => flash('Copy failed.')); else flash('Clipboard not available.'); }
-function flash(s) { ui.hover = s; render(); setTimeout(() => { ui.hover = ''; render(); }, 1500); if (ui.text) { ui.text.footer = s + '   C: copy   N: new game'; render(); } }
+function flash(s) { ui.hover = s; render(); setTimeout(() => { ui.hover = ''; render(); }, 1500); if (ui.text) { ui.text.footer = s + '   C: copy   Shift+N or Enter: new game'; render(); } }
 
 /* ---------- menus ---------- */
 function openMenu(title, lines, onKey, footer) { ui.menu = { title, lines, onKey, footer }; render(); }
@@ -269,7 +270,7 @@ function askIdentify() {
 }
 function openShop(si, sellMode) {
   const g = OD.g, p = g.p, st = g.shops[si];
-  const src = sellMode ? p.inv : st; const lines = src.slice(0, 23).map((it, i) => { const l = itemLine(it, String.fromCharCode(97 + i)); const pr = sellMode ? OD.sellPrice(Object.assign({}, it, { n: 1 })) : OD.buyPrice(it); l.text = l.text.slice(0, 52).padEnd(54) + String(pr).padStart(6) + ' gp'; if (!sellMode && pr > p.gold) l.col = C.dg; return l; });
+  const src = sellMode ? p.inv : st; const lines = src.slice(0, 23).map((it, i) => { const l = itemLine(it, String.fromCharCode(97 + i)); const lot = !sellMode && OD.kindOf(it).type === 'ammo' ? Math.min(it.n, 10) : 1; const pr = sellMode ? OD.sellPrice(Object.assign({}, it, { n: 1 })) : OD.buyPrice(it) * lot; if (lot > 1) l.text += '  (per ' + lot + ')'; l.text = l.text.slice(0, 52).padEnd(54) + String(pr).padStart(6) + ' gp'; if (!sellMode && pr > p.gold) l.col = C.dg; return l; });
   if (!lines.length) lines.push({ text: sellMode ? 'You have nothing to sell.' : 'Sold out.', col: C.gy });
   ui.menu = { title: OD.SHOPS[si].n + (sellMode ? ' — selling' : ' — buying') + '   (you have ' + p.gold + ' gold)', lines, footer: 'a–w: ' + (sellMode ? 'sell one' : 'buy') + ' · Tab: ' + (sellMode ? 'buy' : 'sell') + ' · Esc: leave',
     onKey: k => { if (k === 'Tab' || k === '/') { openShop(si, !sellMode); return true; } const i = k.length === 1 ? k.charCodeAt(0) - 97 : -1; if (src[i]) { if (sellMode) OD.sell(si, i); else OD.buy(si, i); persist(); openShop(si, sellMode); } return true; } };
@@ -340,7 +341,7 @@ function showLog() { const g = OD.g; const lines = g.msgs.map(m => [m.t + (m.x ?
 function showScores() {
   const S = scores(), L = [['HALL OF THE DEAD', C.gold], ''];
   if (!S.length) L.push(['Nobody has died here yet. Be the first.', C.gy]);
-  S.forEach((s, i) => { L.push([String(i + 1).padStart(2) + '. ' + String(s.s).padStart(7) + '  ' + s.n + ' the ' + s.r + ' ' + s.c + ' (L' + s.l + ')', s.w ? C.gold : C.w]); L.push(['              ' + (s.w ? 'won the crown' : 'killed by ' + s.by + ' at ' + s.d * 50 + ' ft') + ' · seed "' + s.seed + '"', C.dg]); });
+  S.forEach((s, i) => { L.push([String(i + 1).padStart(2) + '. ' + String(s.s).padStart(7) + '  ' + s.n + ' the ' + s.r + ' ' + s.c + ' (L' + s.l + ')', s.w ? C.gold : C.w]); L.push(['              ' + (s.w ? (s.cr ? 'brought the crown home' : 'slew the king and retired') : 'killed by ' + s.by + (s.dd ? ' at ' + s.dd * 50 + ' ft' : ' on the surface') + ', deepest ' + s.d * 50 + ' ft') + ' · seed "' + s.seed + '"', C.dg]); });
   ui.text = { lines: L, off: 0, title: true }; render();
 }
 
@@ -357,8 +358,8 @@ function key(k, shift) {
   if (ui.mode === 'create') return keyCreate(k);
   const g = OD.g;
   if (ui.text) { const t = ui.text;
-    if (t.dead) { if (k === 'c' || k === 'C') return copy(shareText()); if (k === 'n' || k === 'N' || k === 'Enter') { ui.text = null; OD.fx.length = 0; ui.mode = 'title'; return render(); } }
-    if (k === 'ArrowDown' || k === 'j') t.off++; else if (k === 'ArrowUp' || k === 'k') t.off--; else if (k === 'PageDown' || k === ' ') t.off += t.per || 20; else if (k === 'PageUp') t.off -= t.per || 20;
+    if (t.dead) { if (k === 'c' || k === 'C') return copy(shareText()); if (k === 'N' || k === 'Enter' || (k === 'n' && isTouch)) { if (Date.now() - t.t0 < 900) return; ui.text = null; OD.fx.length = 0; ui.mode = 'title'; return render(); } }
+    if (k === 'ArrowDown' || k === 'j' || k === '2') t.off++; else if (k === 'ArrowUp' || k === 'k' || k === '8') t.off--; else if (k === 'PageDown' || k === ' ') t.off += t.per || 20; else if (k === 'PageUp') t.off -= t.per || 20;
     else if (k === 'Escape' || k === 'Enter' || k === 'q') { if (t.dead) return; ui.text = null; if (t.title) ui.mode = 'title'; }
     return render(); }
   if (ui.menu) { const m = ui.menu; if (k === 'Escape') { ui.menu = null; if (m.onEsc) m.onEsc(); return after(); } m.onKey(k); return; }
@@ -413,6 +414,8 @@ function key(k, shift) {
 function fightStep(m) { const p = OD.g.p; doAct(() => OD.move(Math.sign(m.x - p.x), Math.sign(m.y - p.y)) || OD.move(Math.sign(m.x - p.x), 0) || OD.move(0, Math.sign(m.y - p.y))); }
 function keyTitle(k) {
   k = k.toLowerCase();
+  if ((k === 'n' || k === 'd') && store.get(LS.save) && !ui.confirmNew) { ui.confirmNew = k; return render(); }
+  if (ui.confirmNew) { const c = ui.confirmNew; ui.confirmNew = null; if (k === 'y') return startCreate(c === 'd'); return render(); }
   if (k === 'n') return startCreate(false);
   if (k === 'd') return startCreate(true);
   if (k === 'c') { const s = store.get(LS.save); if (!s) return; try { OD.load(s); } catch (e) { console.error(e); store.del(LS.save); return render(); } ui.mode = 'play'; return render(); }
@@ -442,6 +445,7 @@ window.addEventListener('keydown', e => {
   let k = e.key; if (k === 'Shift' || k === 'Control' || k === 'Alt' || k === 'Meta' || k === 'CapsLock') return;
   if (e.code && e.code.indexOf('Numpad') === 0 && /^Numpad[1-9]$/.test(e.code)) k = e.code.slice(6);
   if (['Tab', ' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', 'Backspace', 'F1', 'F2', '/', "'"].indexOf(k) >= 0) e.preventDefault();
+  if (e.repeat && (ui.menu || (ui.text && ui.text.dead) || ui.mode === 'title')) return;
   try { key(k, e.shiftKey); } catch (err) { console.error(err); if (OD.g) say('Something went wrong (' + err.message + '). Your game is saved.', C.r); }
 });
 function cellAt(e) { const r = cv.getBoundingClientRect(); return [Math.floor((e.clientX - r.left) / r.width * COLS), Math.floor((e.clientY - r.top) / r.height * ROWS)]; }
@@ -453,15 +457,16 @@ cv.addEventListener('click', e => {
   if (ui.text || ui.mode !== 'play' || !OD.g || OD.g.dead) return;
   if (x >= W || y < MY || y >= MY + H) return; const p = OD.g.p, tx = x, ty = y - MY;
   if (ui.tg) { const m = ui.tg.list.find(m => m.x === tx && m.y === ty), t = ui.tg; ui.tg = null; return t.cb(m ? { x: m.x, y: m.y } : { x: tx, y: ty }); }
-  if (ui.dirCb) { const cb = ui.dirCb; ui.dirCb = null; return cb(Math.sign(tx - p.x), Math.sign(ty - p.y)); }
+  if (ui.dirCb) { const cb = ui.dirCb; ui.dirCb = null; if (tx === p.x && ty === p.y) return render(); return cb(Math.sign(tx - p.x), Math.sign(ty - p.y)); }
   if (tx === p.x && ty === p.y) return key('g');
   if (Math.max(Math.abs(tx - p.x), Math.abs(ty - p.y)) <= 1) return doAct(() => OD.move(tx - p.x, ty - p.y));
   auto(() => OD.goStep(tx, ty));
 });
+cv.addEventListener('wheel', e => { if (ui.text) { ui.text.off += e.deltaY > 0 ? 3 : -3; render(); e.preventDefault(); } }, { passive: false });
 /* touch pad */
 (function () {
   const pad = document.getElementById('pad');
-  const B = [['7', '↖'], ['8', '↑'], ['9', '↗'], ['z', 'explore'], ['Tab', 'fight'], ['g', 'get'], ['i', 'pack'], ['4', '←'], ['5', '·'], ['6', '→'], ['>', '>'], ['<', '<'], ['R', 'rest'], ['f', 'fire'], ['1', '↙'], ['2', '↓'], ['3', '↘'], ['m', 'magic'], ['e', 'equip'], ['Enter', 'ok'], ['Escape', 'esc'], ['?', '?'], ['n', 'N'], ['c', 'C'], ['a', 'a'], ['b', 'b'], ['d', 'd']];
+  const B = [['7', '↖'], ['8', '↑'], ['9', '↗'], ['z', 'explore'], ['Tab', 'fight'], ['g', 'get'], ['i', 'pack'], ['4', '←'], ['5', '·'], ['6', '→'], ['>', '>'], ['<', '<'], ['R', 'rest'], ['f', 'fire'], ['1', '↙'], ['2', '↓'], ['3', '↘'], ['m', 'magic'], ['e', 'equip'], ['Enter', 'ok'], ['Escape', 'esc'], ['?', '?'], ['n', 'N'], ['c', 'C'], ['a', 'a'], ['b', 'b'], ['d', 'd'], ['y', 'y'], ['Q', 'retire']];
   for (const [k, label] of B) { const b = document.createElement('button'); b.textContent = label; b.addEventListener('click', e => { e.preventDefault(); try { key(k, false); } catch (err) { console.error(err); } }); pad.appendChild(b); }
 })();
 window.addEventListener('resize', resize);

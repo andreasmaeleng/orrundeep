@@ -26,7 +26,7 @@ const dist = (ax, ay, bx, by) => Math.max(Math.abs(ax - bx), Math.abs(ay - by));
 /* ---------- Data: races, classes ---------- */
 const RACES = {
   Human:    { str: 0, dex: 0, con: 0, int: 0, hd: 0, stealth: 0, dig: 0, bow: 0, desc: 'Adaptable. Learns quickly (+10% experience).' },
-  Dwarf:    { str: 2, dex: -1, con: 2, int: -1, hd: 1, stealth: -1, dig: 25, bow: 0, desc: 'Tough, born to stone. Tunnels fast, smells gold.' },
+  Dwarf:    { str: 2, dex: -1, con: 2, int: -1, hd: 1, stealth: -1, dig: 25, bow: 0, desc: 'Tough, born to stone. Tunnels through rock and veins fast.' },
   Elf:      { str: -1, dex: 2, con: -1, int: 2, hd: -1, stealth: 1, dig: 0, bow: 3, desc: 'Keen-eyed and quick. Fine archers, sees the unseen.' },
   Halfling: { str: -2, dex: 3, con: 1, int: 0, hd: -2, stealth: 3, dig: 0, bow: 2, desc: 'Small, quiet and very hard to starve.' },
 };
@@ -290,7 +290,7 @@ function randItem(depth, good, types) {
 }
 function itemValue(it) {
   const k = kindOf(it); let v = k.cost;
-  v += Math.max(0, (it.th || 0) + (it.td || 0)) * 40 + Math.max(0, it.ab || 0) * 45;
+  v += Math.max(0, (it.th || 0) + (it.td || 0)) * (k.type === 'ammo' ? 1 : 40) + Math.max(0, it.ab || 0) * 45;
   if (it.ego) v += EGO[it.ego].v;
   if (k.type === 'wand') v = Math.floor(v * (0.4 + (it.ch || 0) * 0.08));
   if (it.cursed) v = 0;
@@ -456,7 +456,7 @@ function newLevel(depth, how) {
     for (let n = 0; n < 4; n++) { dropAt(randItem(depth + 4, chance(50)), x + rint(-1, 1), y + rint(-1, 1)); }
     for (let n = 0; n < 4; n++) { const X = x + rint(-3, 3), Y = y + rint(-3, 3); if (freeCell(X, Y)) spawn(pickMon(depth + 2), X, Y, chance(60)); }
     loot += 2; danger += 1; }
-  if (depth === MAXD) { const [x, y] = randFloor(20); spawn(BOSS, x, y, true); danger += 5; }
+  if (depth === MAXD && g.uniq[BOSS]) { /* the hall is empty now */ } else if (depth === MAXD) { const [x, y] = randFloor(20); spawn(BOSS, x, y, true); danger += 5; }
   else for (let k = 0; k < MON.length; k++) { const mk = MON[k]; if (has(mk, 'U') && !g.uniq[k] && k !== BOSS && mk.d <= depth && mk.d >= depth - 3 && chance(35)) { const [x, y] = randFloor(12); spawn(k, x, y, true); danger += 2; } }
   for (const m of g.mons) if (MON[m.k].d > depth) danger++;
   for (const o of g.items) if (kindOf(o.it).art || o.it.ego) loot += 2;
@@ -516,6 +516,7 @@ function stockShops() {
     for (const id of s.fixed) { const it = mkItem(id, KINDS[id].type === 'ammo' ? 30 : STACK[KINDS[id].type] && KINDS[id].type !== 'weapon' && id !== 'lantern' ? rint(3, 6) : 1); it.idd = 1; if (it.th === undefined && (KINDS[id].type === 'weapon' || KINDS[id].type === 'bow')) { it.th = 0; it.td = 0; } st.push(it); }
     const d = Math.min(12, 2 + Math.floor(g.maxDepth * 0.7));
     for (let n = rint(4, 7); n > 0; n--) { const it = randItem(d, i === 1 && chance(15), s.types); if (it.cursed || KINDS[it.k].cost < 2) continue; it.idd = 1; if (!st.some(o => o.k === it.k && !KINDS[it.k].dice && !KINDS[it.k].ac)) st.push(it); }
+    for (const it of st) learn(it.k);
     return st; });
   g.restock = g.turn;
 }
@@ -733,7 +734,7 @@ function teleport(r) {
 }
 
 /* ---------- player actions (each returns true if a turn passed) ---------- */
-function act(fn) { if (g.dead) return false; fx.length = 0; g.disturb = 0; const r = fn(); if (r && !g.dead) endTurn(); return r; }
+function act(fn) { if (g.dead) return false; fx.length = 0; g.disturb = 0; const r = fn(); if (r && r !== 'done' && !g.dead) endTurn(); return r; }
 function stepOnto() {
   const p = g.p, i = ix(p.x, p.y);
   for (let j = g.items.length - 1; j >= 0; j--) { const o = g.items[j]; if (o.x === p.x && o.y === p.y && o.it.k === 'gold') { p.gold += o.it.n; msg('You pick up ' + o.it.n + ' gold.', C.gold); g.items.splice(j, 1); } }
@@ -841,7 +842,7 @@ function read(i) {
     case 'ench_a': { const a = ARMOR.map(s => p.eq[s]).filter(Boolean); if (!a.length) { msg('Your skin tingles.'); break; } const w = pick(a); if ((w.ab || 0) >= 9) { msg('The enchantment fails.'); break; } w.ab = (w.ab || 0) + 1; w.cursed = 0; w.idd = 1; msg('Your ' + kindOf(w).name + ' glows briefly.', C.lb); break; }
     case 'uncurse': { let n = 0; for (const s of SLOTS) if (p.eq[s] && p.eq[s].cursed) { p.eq[s].cursed = 0; n++; } msg(n ? 'You feel as if someone is watching over you.' : 'Nothing seems to happen.', C.lb); break; }
     case 'treasure': { let n = 0; for (const o of g.items) { g.seen[ix(o.x, o.y)] = 1; o.det = 1; n++; } for (let j = 0; j < W * H; j++) if (g.map[j] === T.GOLD) { g.seen[j] = 1; n++; } msg(n ? 'You sense the glint of treasure.' : 'You sense no treasure.', C.gold); break; }
-    case 'recall': if (g.recall) { g.recall = 0; msg('A tension leaves the air.'); } else { g.recall = rint(15, 30); msg('The air about you grows charged...', C.lb); } break;
+    case 'recall': if (g.depth === 0 && g.maxDepth === 0) { msg('The scroll hums, but you have nowhere to return to yet. (You keep it.)'); invAdd(Object.assign({}, it, { n: 1 })); break; } if (g.recall) { g.recall = 0; msg('A tension leaves the air.'); } else { g.recall = rint(15, 30); msg('The air about you grows charged...', C.lb); } break;
     case 'summon': msg('You hear claws on stone!', C.r); spawnNear(pickMon(g.depth + 1), p.x, p.y, rint(2, 3)); break;
     case 'aggro': msg('A shrieking clamour echoes through the halls!', C.r); g.aggro = 60; for (const m of g.mons) m.sl = 0; break;
     case 'descent': if (g.depth >= MAXD || g.depth === 0) { msg('The floor shivers.'); break; } msg('The floor opens beneath you!', C.p); newLevel(g.depth + 1, 'fall'); arrive(); break;
@@ -913,14 +914,14 @@ function fire(tgt) {
 }
 function launch(it, tgt, skill, dmgf, breakPct) {
   const k = kindOf(it), r = project(tgt.x, tgt.y, 12); fx.push({ cells: r.path, ch: k.ch, col: k.col });
-  const m = r.hits[0]; let broke = false;
+  const m = r.hits[0]; let broke = false; const fragile = (k.type === 'ammo' || k.thrown) && !k.art;
   if (k.type === 'flask' || k.type === 'potion') {
     broke = true;
     if (k.type === 'flask') { msg('The flask bursts into flame!', C.o); const cells = []; for (let y = r.y - 1; y <= r.y + 1; y++) for (let x = r.x - 1; x <= r.x + 1; x++) if (!opaqueT(tile(x, y))) { cells.push([x, y]); const q = monAt(x, y); if (q) hurtMon(q, dice(2, 6) + (q === m ? 4 : 0), 'fire'); } fx.push({ cells, ch: '#', col: C.o }); }
     else msg('The potion shatters.');
   } else if (m) {
-    if (m.sl || chance(clamp(60 + (skill - MON[m.k].ac) * 2.4 - r.path.length, 8, 96))) { let d = Math.max(1, dmgf()); if (m.sl && g.p.cls === 'Rogue') d *= 2; msg('The ' + k.name.toLowerCase() + ' hits ' + mname(m) + '.'); hurtMon(m, d); broke = chance(breakPct); }
-    else { msg('The ' + k.name.toLowerCase() + ' misses ' + mname(m) + '.', C.gy); wake(m); broke = chance(breakPct / 2); }
+    if (m.sl || chance(clamp(60 + (skill - MON[m.k].ac) * 2.4 - r.path.length, 8, 96))) { let d = Math.max(1, dmgf()); if (m.sl && g.p.cls === 'Rogue') d *= 2; msg('The ' + k.name.toLowerCase() + ' hits ' + mname(m) + '.'); hurtMon(m, d); broke = fragile && chance(breakPct); }
+    else { msg('The ' + k.name.toLowerCase() + ' misses ' + mname(m) + '.', C.gy); wake(m); broke = fragile && chance(breakPct / 2); }
   }
   if (!broke) dropAt(it, r.x, r.y);
 }
@@ -960,7 +961,7 @@ function cast(si, tgt) {
   return true;
 }
 function search() { const p = g.p; let f = 0; for (const d of DIRS) { const q = g.traps[ix(p.x + d[0], p.y + d[1])]; if (q && !q.f && chance(p.cls === 'Rogue' ? 90 : 50)) { q.f = 1; f++; } } if (f) msg('You find a trap!', C.y); return true; }
-function closeDoor(dx, dy) { const p = g.p, x = p.x + dx, y = p.y + dy; if (tile(x, y) !== T.OPEN) { msg('There is no open door there.'); return false; } if (monAt(x, y) || g.items.some(o => o.x === x && o.y === y)) { msg('Something is in the way.'); return false; } g.map[ix(x, y)] = T.DOOR; msg('You close the door.'); return true; }
+function closeDoor(dx, dy) { if (!dx && !dy) return false; const p = g.p, x = p.x + dx, y = p.y + dy; if (tile(x, y) !== T.OPEN) { msg('There is no open door there.'); return false; } if (monAt(x, y) || g.items.some(o => o.x === x && o.y === y)) { msg('Something is in the way.'); return false; } g.map[ix(x, y)] = T.DOOR; msg('You close the door.'); return true; }
 function disarm(dx, dy) {
   const p = g.p, i = ix(p.x + dx, p.y + dy), q = g.traps[i]; if (!q || !q.f) { msg('You see no trap there.'); return false; }
   const c = clamp((p.cls === 'Rogue' ? 60 : 25) + p.lvl * 2 + sb(p.d.dex) * 4, 5, 95);
@@ -983,14 +984,14 @@ function tunnelOnce(dx, dy) {
 function tunnel(dx, dy) { // repeats until done or disturbed
   let any = false;
   for (let n = 0; n < 60 && !g.dead; n++) { g.disturb = 0; const r = tunnelOnce(dx, dy); if (!r) break; any = true; endTurn(); if (r === 2 || g.disturb) break; if (n === 59) msg('You dig for a while without breaking through.'); }
-  return any;
+  return any ? 'done' : false;
 }
 function rest() {
   const p = g.p; if (g.mons.some(m => canSee(m) && !m.sl)) { msg('You cannot rest with enemies in view.', C.y); return false; }
   g.resting = 1; let n = 0;
   for (; n < 500 && !g.dead; n++) { if ((p.hp >= p.mhp && p.mp >= p.mmp && !p.t.pois && !p.t.conf && !p.t.afraid) || p.food < 300) break; g.disturb = 0; endTurn(); if (g.disturb) break; }
-  g.resting = 0; if (n) msg(g.disturb ? 'Your rest is interrupted.' : 'You finish resting.', C.gy);
-  return true;
+  g.resting = 0; msg(!n ? 'You have no need to rest.' : g.disturb ? 'Your rest is interrupted.' : 'You finish resting.', C.gy);
+  return n ? 'done' : false;
 }
 function stairs(dir) {
   const p = g.p, t = tile(p.x, p.y);
@@ -1005,7 +1006,7 @@ function pathTo(goal, loose) {
   const blocked = {}; for (const m of g.mons) if (canSee(m)) blocked[ix(m.x, m.y)] = 1;
   while (h < q.length) { const c = q[h++]; if (c !== s && goal(c)) { found = c; break; } const cx = c % W, cy = (c / W) | 0;
     for (let k = 0; k < 8; k++) { const X = cx + DIRS[k][0], Y = cy + DIRS[k][1]; if (!inb(X, Y)) continue; const i = ix(X, Y); if (prev[i] >= 0 || !g.seen[i]) continue;
-      const t = g.map[i]; if (!(passT(t) || t === T.DOOR)) continue; if (t === T.SHOP) continue; if (!loose && (blocked[i] || (g.traps[i] && g.traps[i].f))) continue; if (k >= 4 && t === T.DOOR) continue; prev[i] = c; q.push(i); } }
+      const t = g.map[i]; if (!(passT(t) || t === T.DOOR)) continue; if (t === T.SHOP && !goal(i)) continue; if (!loose && (blocked[i] || (g.traps[i] && g.traps[i].f))) continue; if (k >= 4 && t === T.DOOR) continue; prev[i] = c; q.push(i); } }
   if (found < 0) return null; let c = found; while (prev[c] !== s) c = prev[c]; return { x: c % W, y: (c / W) | 0, goal: found };
 }
 function dangerInView() { return g.mons.some(m => canSee(m) && !m.sl && vis[ix(m.x, m.y)]); }
@@ -1094,11 +1095,13 @@ function newGame(o) {
 function save() { return JSON.stringify(g); }
 function load(s) { g = typeof s === 'string' ? JSON.parse(s) : s; fx.length = 0; recalc(); updateVis(); return g; }
 function score() { const p = g.p; return Math.floor(p.exp + g.maxDepth * 150 + p.gold / 5 + (g.won ? 25000 : 0) + (g.crownHome ? 15000 : 0)); }
+function withArticle(n) { return /^[A-Z]/.test(n) || /^(a |an |the |poison|starvation)/.test(n) ? n : (/^[aeiou]/.test(n) ? 'an ' : 'a ') + n; }
 function morgue() {
   const p = g.p, L = [];
-  const fate = g.crownHome ? 'Returned to the surface bearing the Drowned Crown' : g.won ? 'Slew the Drowned King and retired in glory' : g.dead ? 'Killed by ' + (/^[A-Z]/.test(g.dead.cause) ? '' : /^[aeiou]/.test(g.dead.cause) ? 'an ' : /^(a |poison|starvation)/.test(g.dead.cause) ? '' : 'a ') + g.dead.cause : 'Still delving';
+  const killed = g.dead && !g.dead.retired;
+  const fate = killed ? 'Killed by ' + withArticle(g.dead.cause) + (g.won ? ' after slaying the Drowned King' : '') : g.crownHome ? 'Returned to the surface bearing the Drowned Crown' : g.won ? 'Slew the Drowned King and retired in glory' : 'Still delving';
   L.push('ORRUNDEEP — ' + p.name + ' the ' + p.race + ' ' + p.cls + ' (level ' + p.lvl + ')');
-  L.push(fate + (g.dead && !g.won ? ' on ' + (g.dead.depth ? 'depth ' + g.dead.depth + ' (' + g.dead.depth * 50 + ' ft)' : 'the surface') : '') + '.');
+  L.push(fate + (killed ? ' on ' + (g.dead.depth ? 'depth ' + g.dead.depth + ' (' + g.dead.depth * 50 + ' ft)' : 'the surface') : '') + '.');
   L.push('Score ' + score() + ' · deepest ' + g.maxDepth * 50 + ' ft · ' + g.turn + ' turns · ' + g.kills + ' kills · seed "' + g.seed + '"');
   L.push('');
   L.push('HP ' + p.hp + '/' + p.mhp + (p.mmp ? '  MP ' + p.mp + '/' + p.mmp : '') + '  AC ' + p.d.ac + '  Str ' + p.st.str + ' Dex ' + p.st.dex + ' Con ' + p.st.con + ' Int ' + p.st.int + '  Gold ' + p.gold);
@@ -1114,7 +1117,7 @@ function describe(x, y) {
   if (!inb(x, y) || !g.seen[ix(x, y)]) return 'Unknown.';
   const out = []; const m = monAt(x, y);
   if (g.p.x === x && g.p.y === y) out.push('You, ' + g.p.name + '.');
-  if (m && canSee(m)) { const k = MON[m.k], r = m.hp / m.mhp; out.push(cap(has(k, 'U') ? k.n : 'a ' + k.n) + ' (lvl ' + k.lv + ', ' + (r >= 1 ? 'unhurt' : r > 0.66 ? 'scratched' : r > 0.33 ? 'wounded' : 'almost dead') + (m.sl ? ', asleep' : m.fear ? ', fleeing' : '') + ')'); }
+  if (m && canSee(m)) { const k = MON[m.k], r = m.hp / m.mhp; out.push(cap(withArticle(k.n)) + ' (lvl ' + k.lv + ', ' + (r >= 1 ? 'unhurt' : r > 0.66 ? 'scratched' : r > 0.33 ? 'wounded' : 'almost dead') + (m.sl ? ', asleep' : m.fear ? ', fleeing' : '') + ')'); }
   if (vis[ix(x, y)] || g.items.some(o => o.x === x && o.y === y && o.det)) for (const o of g.items) if (o.x === x && o.y === y) out.push(itemName(o.it));
   const tr = g.traps[ix(x, y)]; if (tr && tr.f) out.push({ pit: 'a pit', dart: 'a dart trap', tele: 'a twisting rune', gas: 'a gas trap', summon: 'a summoning rune', fire: 'a fire trap', door: 'a trapdoor' }[tr.k]);
   const t = g.map[ix(x, y)];
@@ -1125,6 +1128,6 @@ function retire() { if (g.won && !g.dead) { g.dead = { cause: 'retired', depth: 
 
 root.OD = { W, H, T, C, MAXD, RACES, CLASSES, SPELLS, KINDS, MON, SLOTS, SLOTNAME, SHOPS, ARMOR,
   get g() { return g; }, vis, fx, newGame, save, load, act, move, pickup, drop, wear, takeOff, eat, quaff, read, aim, fire, throwItem, refuel, cast, search, closeDoor, disarm, tunnel, rest, stairs,
-  exploreStep, travelStep, runStep, goStep, resolveAsk, itemName, itemCol, kindOf, canSee, monAt, buy, sell, buyPrice, sellPrice, spellList, spellFail, score, morgue, describe, depthName, expFor, fullyKnown, retire, dangerInView,
+  exploreStep, travelStep, runStep, goStep, resolveAsk, itemName, itemCol, kindOf, canSee, monAt, buy, sell, buyPrice, sellPrice, spellList, spellFail, score, morgue, describe, depthName, expFor, fullyKnown, retire, dangerInView, withArticle,
   endTurnPublic: () => act(() => true) };
 })(typeof module !== 'undefined' && module.exports ? module.exports : window);
