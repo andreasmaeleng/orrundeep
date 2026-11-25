@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Orrundeep — a classic ASCII dungeon descent</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="description" content="Orrundeep: a free, old-school ASCII roguelike. Twenty levels of a drowned dwarven city, permadeath, unidentified potions, mineral veins, a town with four shops. Plays in the browser, no install.">
+<meta property="og:title" content="Orrundeep — a classic ASCII dungeon descent">
+<meta property="og:description" content="Old-school ASCII roguelike in the browser. Twenty levels down. Permadeath. No install, no account.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://andreasmaeleng.github.io/orrundeep/screenshot.png">
+<meta property="og:url" content="https://andreasmaeleng.github.io/orrundeep/">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#0b0a08">
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0a08; color: #d8d4c8; overflow: hidden; font-family: ui-monospace, 'DejaVu Sans Mono', Menlo, Consolas, 'Courier New', monospace; }
+  #wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; }
+  canvas { display: block; image-rendering: pixelated; outline: none; touch-action: manipulation; }
+  #pad { display: none; flex-wrap: wrap; justify-content: center; gap: 4px; padding: 4px; user-select: none; -webkit-user-select: none; }
+  #pad button { font: 15px ui-monospace, Menlo, Consolas, monospace; min-width: 40px; height: 36px; background: #1c1a15; color: #d8d4c8; border: 1px solid #55524a; border-radius: 4px; }
+  #pad button:active { background: #55524a; }
+  body.touch #pad { display: flex; }
+  body.crt #wrap::after { content: ''; position: fixed; inset: 0; pointer-events: none; background: repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0, rgba(0,0,0,0) 2px, rgba(0,0,0,.16) 3px); }
+  noscript { display: block; padding: 2em; }
+</style>
+</head>
+<body class="crt">
+<div id="wrap">
+  <canvas id="c" tabindex="0" aria-label="Orrundeep game screen"></canvas>
+  <div id="pad"></div>
+</div>
+<noscript>Orrundeep is a browser game and needs JavaScript. It makes no network requests and stores nothing but your save, locally.</noscript>
+<script src="game.js"></script>
+<script>
+'use strict';
+const C = OD.C, T = OD.T, W = OD.W, H = OD.H;
+const COLS = 102, ROWS = 37, MY = 2, SX = 81;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let cw = 8, ch = 16, fs = 14;
+const ui = { mode: 'title', menu: null, text: null, tg: null, look: null, dirCb: null, auto: null, n: 0, hover: '', create: null };
+const LS = { save: 'orrundeep.save', scores: 'orrundeep.scores', crt: 'orrundeep.crt' };
+const store = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }, del(k) { try { localStorage.removeItem(k); } catch (e) {} } };
+if (store.get(LS.crt) === '0') document.body.classList.remove('crt');
+const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+if (isTouch) document.body.classList.add('touch');
+
+/* ---------- canvas ---------- */
+function resize() {
+  const dpr = window.devicePixelRatio || 1, pad = document.getElementById('pad');
+  const aw = window.innerWidth * dpr, ah = (window.innerHeight - (isTouch ? pad.offsetHeight : 0)) * dpr;
+  fs = Math.max(6, Math.floor(Math.min(aw / COLS / 0.6, ah / ROWS / 1.22)));
+  cw = Math.round(fs * 0.6); ch = Math.round(fs * 1.22);
+  cv.width = COLS * cw; cv.height = ROWS * ch; cv.style.width = cv.width / dpr + 'px'; cv.style.height = cv.height / dpr + 'px';
+  render();
+}
+function put(x, y, s, fg, bg, bold) {
+  if (bg) { ctx.fillStyle = bg; ctx.fillRect(x * cw, y * ch, cw, ch); }
+  if (s === ' ') return; ctx.fillStyle = fg || C.w; ctx.font = (bold ? 'bold ' : '') + fs + "px ui-monospace,'DejaVu Sans Mono',Menlo,Consolas,'Courier New',monospace";
+  ctx.fillText(s, x * cw + cw / 2, y * ch + ch / 2 + 1);
+}
+function text(x, y, s, fg, bg, bold) { for (let i = 0; i < s.length && x + i < COLS; i++) put(x + i, y, s[i], fg, bg, bold); }
+function ctext(y, s, fg, bold, x0, w) { text((x0 || 0) + Math.floor(((w || COLS) - s.length) / 2), y, s, fg, null, bold); }
+function box(x, y, w, h) { ctx.fillStyle = '#0f0e0b'; ctx.fillRect(x * cw, y * ch, w * cw, h * ch); ctx.strokeStyle = '#8a8578'; ctx.lineWidth = Math.max(1, Math.floor(fs / 10)); ctx.strokeRect(x * cw + cw / 2, y * ch + ch / 2, (w - 1) * cw, (h - 1) * ch); }
+function dim(hex, f) { const n = parseInt(hex.slice(1), 16); const r = (n >> 16) * f, g = ((n >> 8) & 255) * f, b = (n & 255) * f; return 'rgb(' + (r | 0) + ',' + (g | 0) + ',' + (b | 0) + ')'; }
+function wallCol(d) { return d === 0 ? '#9a8f7a' : d <= 5 ? '#8f8674' : d <= 10 ? '#6f8894' : d <= 15 ? '#a8684e' : '#8a6aa8'; }
+const TG = ['#', '.', '+', "'", '>', '<', '%', '*', ':', '1', '#'];
+function tileLook(g, i) {
+  const t = g.map[i];
+  if (t === T.WALL || t === T.PERMA) return ['#', wallCol(g.depth)];
+  if (t === T.FLOOR) return [g.depth === 0 ? '.' : '.', g.depth === 0 ? '#6f7a4a' : '#77705f'];
+  if (t === T.DOOR || t === T.OPEN) return [TG[t], C.br];
+  if (t === T.DOWN || t === T.UP) return [TG[t], C.wh];
+  if (t === T.VEIN) return ['%', '#7d8a8f'];
+  if (t === T.GOLD) return ['*', C.gold];
+  if (t === T.RUBBLE) return [':', '#8a8578'];
+  if (t === T.SHOP) return [String(g.shopPos[i] + 1), C.gold];
+  return ['?', C.w];
+}
+
+/* ---------- rendering ---------- */
+function render() {
+  ctx.fillStyle = '#0b0a08'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  if (ui.mode === 'title') return drawTitle();
+  if (ui.mode === 'create') return drawCreate();
+  const g = OD.g; if (!g) return;
+  drawMap(g); drawSide(g); drawMsgs(g);
+  if (ui.menu) drawMenu(ui.menu);
+  if (ui.text) drawText(ui.text);
+}
+function drawMap(g, fxOn) {
+  const p = g.p, vis = OD.vis;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (!g.seen[i]) continue;
+    const [s, col] = tileLook(g, i), v = vis[i];
+    let fg = v ? col : dim(col, 0.58), glyph = s;
+    const tr = g.traps[i]; if (tr && tr.f) { glyph = '^'; fg = v ? C.r : dim(C.r, 0.5); }
+    put(x, y + MY, glyph, fg);
+  }
+  for (const o of g.items) { const i = o.y * W + o.x; if (!g.seen[i]) continue; if (!OD.vis[i] && !o.det && !o.sn) continue; if (OD.vis[i]) o.sn = 1;
+    const k = OD.kindOf(o.it), col = OD.itemCol(o.it); put(o.x, o.y + MY, k.ch, OD.vis[i] ? col : dim(col, 0.5), '#0b0a08'); }
+  for (const m of g.mons) if (OD.canSee(m)) { const k = OD.MON[m.k]; put(m.x, m.y + MY, k.ch, m.sl ? dim(k.col, 0.75) : k.col, k.fl.indexOf('U') >= 0 ? '#2a1030' : '#0b0a08', true); }
+  put(p.x, p.y + MY, '@', C.wh, p.hp < p.mhp * 0.25 ? '#6a1408' : '#0b0a08', true);
+  if (ui.tg) { const t = ui.tg.list[ui.tg.idx]; if (t) { const k = OD.MON[t.k]; put(t.x, t.y + MY, k.ch, '#000', C.y, true); } }
+  if (ui.look) { const L = ui.look; ctx.strokeStyle = C.y; ctx.lineWidth = 2; ctx.strokeRect(L.x * cw + 1, (L.y + MY) * ch + 1, cw - 2, ch - 2); }
+  if (fxOn) for (const f of OD.fx) for (const [x, y] of f.cells) if (OD.vis[y * W + x]) put(x, y + MY, f.ch, f.col, '#0b0a08', true);
+}
+function bar(x, y, w, v, m, col, label) {
+  const f = m > 0 ? Math.max(0, Math.min(1, v / m)) : 0; ctx.fillStyle = '#26231d'; ctx.fillRect(x * cw, y * ch + 2, w * cw, ch - 4);
+  ctx.fillStyle = col; ctx.fillRect(x * cw, y * ch + 2, Math.round(w * cw * f), ch - 4); ctext(y, label, C.wh, true, x, w);
+}
+function drawSide(g) {
+  const p = g.p, d = p.d; let y = 0; const L = (s, c, b) => text(SX, y++, s, c || C.w, null, b);
+  L(p.name, C.gold, true); L(p.race + ' ' + p.cls, C.gy);
+  L('Level ' + p.lvl + (p.lvl < 40 ? '  next ' + Math.max(0, Math.ceil(OD.expFor(p.lvl) - p.exp)) : ''), C.w);
+  y++;
+  bar(SX, y++, 20, p.hp, p.mhp, p.hp < p.mhp * 0.25 ? '#a02818' : p.hp < p.mhp * 0.5 ? '#a8742a' : '#3f7f3a', 'HP ' + p.hp + '/' + p.mhp);
+  if (p.mmp) bar(SX, y++, 20, p.mp, p.mmp, '#2f5fa8', 'MP ' + p.mp + '/' + p.mmp);
+  y++;
+  L('AC ' + d.ac + '   Gold ' + p.gold, C.w);
+  L('Str ' + d.str + '  Dex ' + d.dex, C.gy); L('Con ' + p.st.con + '  Int ' + p.st.int, C.gy);
+  y++;
+  L(g.depth ? 'Depth ' + g.depth + '  ' + g.depth * 50 + ' ft' : 'Orrun Gate', C.lb, true);
+  L('Turn ' + g.turn, C.dg);
+  const l = p.eq.light; L(l ? (OD.kindOf(l).art ? 'Light: eternal' : 'Light: ' + l.fuel) : 'No light!', !l || (!OD.kindOf(l).art && l.fuel < 300) ? C.r : C.gy);
+  // status
+  const st = []; const t = p.t;
+  if (p.food < 400) st.push(['Weak', C.r]); else if (p.food < 1500) st.push(['Hungry', C.y]);
+  if (t.pois) st.push(['Poisoned', C.g]); if (t.conf) st.push(['Confused', C.y]); if (t.afraid) st.push(['Afraid', C.y]); if (t.haste) st.push(['Fast', C.lb]); if (t.slow) st.push(['Slow', C.r]);
+  if (t.hero) st.push(['Hero', C.gold]); if (t.resist) st.push(['Resist', C.lb]); if (t.seeinv) st.push(['TrueSight', C.lb]); if (g.recall) st.push(['Recall', C.p]); if (g.won) st.push(['VICTOR', C.gold]);
+  let sx = SX; y++; for (const [s, c] of st) { if (sx + s.length > COLS) { sx = SX; y++; } text(sx, y, s, c, null, true); sx += s.length + 1; } y += 2;
+  // visible creatures
+  const ms = g.mons.filter(m => OD.canSee(m)).sort((a, b) => Math.max(Math.abs(a.x - p.x), Math.abs(a.y - p.y)) - Math.max(Math.abs(b.x - p.x), Math.abs(b.y - p.y)));
+  if (ms.length) { text(SX, y++, 'In view:', C.dg); }
+  for (const m of ms) { if (y >= ROWS - 3) { text(SX, y, '...', C.dg); break; } const k = OD.MON[m.k], r = m.hp / m.mhp;
+    put(SX, y, k.ch, k.col, null, true); text(SX + 2, y, (m.sl ? 'z ' : '') + k.n.split(',')[0].slice(0, m.sl ? 16 : 18), r > 0.66 ? C.w : r > 0.33 ? C.y : C.r); y++; }
+  // footer
+  text(0, ROWS - 2, ui.hover || footHint(), C.dg);
+  text(0, ROWS - 1, '?:help  z:explore  >:stairs  i:pack  R:rest  Tab:fight  f:fire  m:magic  g:get  S:save', '#3f3c35');
+}
+function footHint() {
+  if (ui.tg) return 'TARGET: Tab/Space next · Enter/f fire · or a direction · Esc cancel';
+  if (ui.look) return 'LOOK: move the cursor · Esc to stop';
+  if (ui.dirCb) return 'Which direction?';
+  return '';
+}
+function drawMsgs(g) {
+  const L = g.msgs.slice(-2);
+  if (ui.look) { text(0, 0, OD.describe(ui.look.x, ui.look.y).slice(0, 80), C.y); return; }
+  // pack recent messages into two lines
+  const recent = g.msgs.filter(m => m.turn >= g.turn - 1).slice(-8), rows = ['', '']; const cols = [[], []]; let r = 0;
+  const src = recent.length ? recent : L.slice(-1);
+  for (const m of src) { const s = m.t + (m.x ? ' (x' + m.x + ')' : '') + ' '; if (rows[r].length + s.length > 80) { if (r === 0) r = 1; else { rows[0] = rows[1]; cols[0] = cols[1]; rows[1] = ''; cols[1] = []; } }
+    cols[r].push([rows[r].length, s.slice(0, 80), recent.length ? m.c : C.dg]); rows[r] += s.slice(0, 80); }
+  for (let i = 0; i < 2; i++) for (const [x, s, c] of cols[i]) text(x, i, s, c);
+}
+function drawMenu(m) {
+  const w = Math.min(78, Math.max(m.title.length + 4, ...m.lines.map(l => l.text.length + 6), (m.footer || '').length + 4, 30)), h = m.lines.length + 4 + (m.footer ? 1 : 0);
+  const x = Math.floor((W - w) / 2), y = MY + Math.max(0, Math.floor((H - h) / 2));
+  box(x, y, w, h); text(x + 2, y + 1, m.title, C.gold, null, true);
+  m.rows = {};
+  m.lines.forEach((l, i) => { const Y = y + 3 + i; if (l.key) { text(x + 2, Y, l.key + ')', C.y); m.rows[Y] = l.key; } if (l.glyph) put(x + 5, Y, l.glyph, l.gcol, null, true); text(x + (l.key ? (l.glyph ? 7 : 5) : 2), Y, l.text, l.col || C.w); });
+  if (m.footer) text(x + 2, y + h - 2, m.footer, C.dg);
+}
+function drawText(t) {
+  box(1, MY, W - 2, H); const per = H - 4; t.per = per; const max = Math.max(0, t.lines.length - per); if (t.off > max) t.off = max; if (t.off < 0) t.off = 0;
+  for (let i = 0; i < per; i++) { const l = t.lines[t.off + i]; if (l === undefined) break; const s = typeof l === 'string' ? l : l[0], c = typeof l === 'string' ? C.w : l[1]; text(3, MY + 1 + i, s.slice(0, W - 6), c); }
+  text(3, MY + H - 2, (t.footer || '') + (max ? '  ↑/↓ PgUp/PgDn scroll' : '') + (t.dead ? '' : '  Esc: close'), C.dg);
+}
+const LOGO = String.raw`
+  ___  ____  ____  _   _ _   _ ____  _____ _____ ____
+ / _ \|  _ \|  _ \| | | | \ | |  _ \| ____| ____|  _ \
+| | | | |_) | |_) | | | |  \| | | | |  _| |  _| | |_) |
+| |_| |  _ <|  _ <| |_| | |\  | |_| | |___| |___|  __/
+ \___/|_| \_\_| \_\\___/|_| \_|____/|_____|_____|_|`.split('\n').slice(1);
+function drawTitle() {
+  const x0 = Math.floor((COLS - 53) / 2); LOGO.forEach((l, i) => text(x0, 4 + i, l, i < 2 ? C.gold : i < 4 ? C.o : C.r, null, true));
+  ctext(10, 'a classic ASCII dungeon descent', C.gy);
+  const lore = ['Two hundred years ago the dwarves of Orrun dug too greedily beneath the sea,', 'and the sea came in. Their king would not leave his hall. He is down there still —',
+    'twenty levels and a thousand feet below the Gate, wearing a crown of drowned gold.', '', 'Go down. Bring it back. Try not to die on the stairs.'];
+  lore.forEach((l, i) => ctext(13 + i, l, i === 4 ? C.w : '#a8a294'));
+  const has = !!store.get(LS.save); let y = 21;
+  const opt = (k, s, on) => { ctext(y++, '[' + k + '] ' + s, on === false ? C.dg : C.w, true); };
+  opt('N', 'New descent      ', true); opt('C', 'Continue         ', has); opt('D', 'Daily seed       ', true); opt('H', 'Hall of the dead ', true); opt('?', 'How to play      ', true);
+  ctext(28, 'Permadeath · 20 levels · 4 races · 4 classes · 12 spells · 60 creatures · town & shops', C.dg);
+  ctext(30, 'Keyboard: arrows / numpad / hjklyubn.   F2 toggles scanlines.   No ads, no tracking, no account.', C.dg);
+  const u = new URLSearchParams(location.search).get('seed'); if (u) ctext(32, 'Seed from link: "' + u + '" — press N to play it.', C.lb);
+  ctext(ROWS - 2, 'v1.0 · MIT licence · source on GitHub', '#3f3c35');
+}
+function drawCreate() {
+  const c = ui.create; ctext(3, 'A NEW DESCENT', C.gold, true); let y = 6;
+  const list = (title, obj, sel, active) => { text(8, y++, title, active ? C.y : C.dg, null, true); y++;
+    Object.keys(obj).forEach((k, i) => { const on = sel === k; text(10, y, String.fromCharCode(97 + i) + ') ' + k.padEnd(10), on ? C.gold : active ? C.w : C.dg, null, on); text(26, y, obj[k].desc, on ? C.w : C.dg); y++; }); y++; };
+  list('Choose your people', OD.RACES, c.race, c.step === 0); list('Choose your calling', OD.CLASSES, c.cls, c.step === 1);
+  text(8, y++, 'Name', c.step === 2 ? C.y : C.dg, null, true); y++;
+  text(10, y, c.name + (c.step === 2 ? '_' : ''), C.wh, null, true); y += 2;
+  text(8, y++, 'Seed: "' + c.seed + '"' + (c.daily ? '  (today\'s daily — same dungeon for everyone)' : ''), C.dg);
+  ctext(ROWS - 3, c.step < 2 ? 'Press a–d to choose.  Esc: back' : 'Type a name, Enter to begin.  Esc: back', C.gy);
+}
+
+/* ---------- persistence ---------- */
+function persist() { const g = OD.g; if (g && !g.dead) store.set(LS.save, OD.save()); }
+function scores() { try { return JSON.parse(store.get(LS.scores) || '[]'); } catch (e) { return []; } }
+window.addEventListener('beforeunload', persist); document.addEventListener('visibilitychange', () => { if (document.hidden) persist(); });
+
+/* ---------- flow ---------- */
+function stopAuto() { ui.auto = null; }
+function auto(step) { ui.auto = step; const tick = () => { if (ui.auto !== step) return; let ok = false; try { ok = step(); } catch (e) { console.error(e); } after(true); if (ok && ui.auto === step && ui.mode === 'play' && !ui.menu) setTimeout(tick, 14); else if (ui.auto === step) ui.auto = null; }; tick(); }
+function after(quiet) {
+  const g = OD.g; if (!g) return;
+  if (g.event && g.event.shop !== undefined) { const s = g.event.shop; g.event = null; stopAuto(); openShop(s); }
+  if (g.ask) { stopAuto(); askIdentify(); }
+  if (g.crownHome && !g.dead) OD.retire();
+  if (g.dead) { stopAuto(); return onDeath(); }
+  if (g.autosave || ++ui.n % 25 === 0) { g.autosave = 0; persist(); }
+  render();
+  if (OD.fx.length && !quiet) { drawMap(g, true); const n = ++ui.fxn; setTimeout(() => { if (ui.fxn === n) { OD.fx.length = 0; render(); } }, 130); }
+}
+ui.fxn = 0;
+function doAct(fn) { OD.act(fn); after(); }
+function onDeath() {
+  const g = OD.g; ui.menu = null; ui.tg = null; ui.look = null;
+  if (!g.recorded) { g.recorded = 1; const S = scores(); S.push({ s: OD.score(), n: g.p.name, r: g.p.race, c: g.p.cls, l: g.p.lvl, d: g.maxDepth, w: g.dead.retired ? 1 : 0, by: g.dead.cause, seed: g.seed, t: Date.now() }); S.sort((a, b) => b.s - a.s); store.set(LS.scores, JSON.stringify(S.slice(0, 15))); store.del(LS.save); }
+  const won = g.dead.retired; const art = won ? ['       .   *   .', '    *   \\  |  /   *', '   --   VICTORY   --', '    *   /  |  \\   *', '       .   *   .'] :
+    ['        _________', '       /         \\', '      /   R.I.P.  \\', '      |           |', '      |           |', '     _|___________|_'];
+  const lines = art.map(a => [a, won ? C.gold : C.gy]).concat([''], OD.morgue().split('\n').map((l, i) => [l, i === 0 ? C.gold : i === 1 ? (won ? C.gold : C.r) : C.w]));
+  ui.mode = 'play'; ui.text = { lines, off: 0, footer: 'C: copy to clipboard   N: new game', dead: true }; render();
+}
+function shareText() { const g = OD.g; return OD.morgue() + '\n\nPlay the same dungeon: ' + location.origin + location.pathname + '?seed=' + encodeURIComponent(g.seed); }
+function copy(s) { if (navigator.clipboard) navigator.clipboard.writeText(s).then(() => flash('Copied to clipboard.'), () => flash('Copy failed.')); else flash('Clipboard not available.'); }
+function flash(s) { ui.hover = s; render(); setTimeout(() => { ui.hover = ''; render(); }, 1500); if (ui.text) { ui.text.footer = s + '   C: copy   N: new game'; render(); } }
+
+/* ---------- menus ---------- */
+function openMenu(title, lines, onKey, footer) { ui.menu = { title, lines, onKey, footer }; render(); }
+function closeMenu() { ui.menu = null; render(); }
+function itemLine(it, key) { const k = OD.kindOf(it); return { key, glyph: k.ch, gcol: OD.itemCol(it), text: OD.itemName(it), col: it.cursed && it.idd ? C.r : k.art ? C.gold : it.ego ? C.lb : C.w }; }
+function chooseItem(prompt, filter, cb, empty) {
+  const g = OD.g, inv = g.p.inv, idx = []; inv.forEach((it, i) => { if (!filter || filter(it)) idx.push(i); });
+  if (!idx.length) return say(empty || 'You have nothing suitable.');
+  const lines = idx.map(i => itemLine(inv[i], String.fromCharCode(97 + i)));
+  openMenu(prompt, lines, k => { const i = k.length === 1 ? k.charCodeAt(0) - 97 : -1; if (idx.indexOf(i) >= 0) { closeMenu(); cb(i); } return true; }, 'Esc: cancel');
+}
+function showInv() {
+  const g = OD.g, inv = g.p.inv; const lines = inv.length ? inv.map((it, i) => itemLine(it, String.fromCharCode(97 + i))) : [{ text: 'Your pack is empty.', col: C.gy }];
+  openMenu('Pack (' + inv.length + '/23)', lines, k => { const i = k.length === 1 ? k.charCodeAt(0) - 97 : -1; if (inv[i]) { closeMenu(); itemActions(i); } return true; }, 'Pick an item for actions · Esc: close');
+}
+function itemActions(i) {
+  const it = OD.g.p.inv[i], k = OD.kindOf(it), ty = k.type, L = [];
+  const A = (key, text, fn) => L.push({ key, text, fn });
+  if (OD.SLOTS.indexOf(ty) >= 0) A('w', ty === 'weapon' || ty === 'bow' ? 'Wield' : ty === 'light' ? 'Light it' : 'Put on', () => doAct(() => OD.wear(i)));
+  if (ty === 'potion') A('q', 'Quaff', () => doAct(() => OD.quaff(i)));
+  if (ty === 'scroll') A('r', 'Read', () => doAct(() => OD.read(i)));
+  if (ty === 'food') A('E', 'Eat', () => doAct(() => OD.eat(i)));
+  if (ty === 'wand') A('a', 'Aim', () => askTarget(t => doAct(() => OD.aim(i, t))));
+  A('v', 'Throw', () => askTarget(t => doAct(() => OD.throwItem(i, t))));
+  A('d', 'Drop', () => doAct(() => OD.drop(i)));
+  openMenu(OD.itemName(it), L, key => { const a = L.find(l => l.key === key); if (a) { closeMenu(); a.fn(); } return true; }, 'Esc: back');
+}
+function showEquip() {
+  const p = OD.g.p; const lines = OD.SLOTS.map((s, i) => { const it = p.eq[s]; const l = it ? itemLine(it, String.fromCharCode(97 + i)) : { key: String.fromCharCode(97 + i), text: '—', col: C.dg }; l.text = (OD.SLOTNAME[s] + ':').padEnd(11) + l.text; l.glyph = null; return l; });
+  openMenu('Equipment', lines, k => { const i = k.length === 1 ? k.charCodeAt(0) - 97 : -1; const s = OD.SLOTS[i]; if (s && p.eq[s]) { closeMenu(); doAct(() => OD.takeOff(s)); } return true; }, 'Pick a slot to take it off · Esc: close');
+}
+function askIdentify() {
+  const g = OD.g, p = g.p, opts = [], lines = [];
+  p.inv.forEach((it, i) => { if (!OD.fullyKnown(it)) opts.push({ inv: i, it }); }); OD.SLOTS.forEach(s => { if (p.eq[s] && !OD.fullyKnown(p.eq[s])) opts.push({ eq: s, it: p.eq[s] }); });
+  if (!opts.length) { OD.resolveAsk(null); return; }
+  opts.forEach((o, i) => lines.push(itemLine(o.it, String.fromCharCode(97 + i))));
+  ui.menu = { title: 'Identify which item?', lines, footer: 'Esc: waste it', onEsc: () => OD.resolveAsk(null), onKey: k => { const o = opts[k.length === 1 ? k.charCodeAt(0) - 97 : -1]; if (o) { ui.menu = null; OD.resolveAsk(o); after(); } return true; } };
+}
+function openShop(si, sellMode) {
+  const g = OD.g, p = g.p, st = g.shops[si];
+  const src = sellMode ? p.inv : st; const lines = src.slice(0, 23).map((it, i) => { const l = itemLine(it, String.fromCharCode(97 + i)); const pr = sellMode ? OD.sellPrice(Object.assign({}, it, { n: 1 })) : OD.buyPrice(it); l.text = l.text.slice(0, 52).padEnd(54) + String(pr).padStart(6) + ' gp'; if (!sellMode && pr > p.gold) l.col = C.dg; return l; });
+  if (!lines.length) lines.push({ text: sellMode ? 'You have nothing to sell.' : 'Sold out.', col: C.gy });
+  ui.menu = { title: OD.SHOPS[si].n + (sellMode ? ' — selling' : ' — buying') + '   (you have ' + p.gold + ' gold)', lines, footer: 'a–w: ' + (sellMode ? 'sell one' : 'buy') + ' · Tab: ' + (sellMode ? 'buy' : 'sell') + ' · Esc: leave',
+    onKey: k => { if (k === 'Tab' || k === '/') { openShop(si, !sellMode); return true; } const i = k.length === 1 ? k.charCodeAt(0) - 97 : -1; if (src[i]) { if (sellMode) OD.sell(si, i); else OD.buy(si, i); persist(); openShop(si, sellMode); } return true; } };
+  render();
+}
+function showSpells() {
+  const g = OD.g, p = g.p; if (p.cls !== 'Mage') { say('Only mages wield spells. (Wands work for everyone: a)'); return; }
+  const sp = OD.spellList(); const lines = sp.map((s, i) => ({ key: String.fromCharCode(97 + i), text: s.n.padEnd(14) + ' ' + String(s.mp).padStart(2) + ' mp  ' + String(OD.spellFail(s)).padStart(2) + '% fail  ' + s.d, col: s.mp <= p.mp ? C.w : C.dg }));
+  const nx = OD.SPELLS.find(s => s.lv > p.lvl); if (nx) lines.push({ text: 'Next: ' + nx.n + ' at level ' + nx.lv, col: C.dg });
+  openMenu('Spells (mana ' + p.mp + '/' + p.mmp + ')', lines, k => { const s = sp[k.length === 1 ? k.charCodeAt(0) - 97 : -1]; if (s) { closeMenu(); const si = OD.SPELLS.indexOf(s); if (s.t) askTarget(t => doAct(() => OD.cast(si, t))); else doAct(() => OD.cast(si)); } return true; }, 'Esc: cancel');
+}
+function say(s, c) { const g = OD.g; g.msgs.push({ t: s, c: c || C.gy, turn: g.turn }); render(); }
+function askDir(cb) { ui.dirCb = cb; render(); }
+function visMons() { const g = OD.g, p = g.p; return g.mons.filter(m => OD.canSee(m) && OD.vis[m.y * W + m.x]).sort((a, b) => Math.max(Math.abs(a.x - p.x), Math.abs(a.y - p.y)) - Math.max(Math.abs(b.x - p.x), Math.abs(b.y - p.y))); }
+function askTarget(cb) { const list = visMons(); if (!list.length) return askDir((dx, dy) => { const p = OD.g.p; cb({ x: p.x + dx, y: p.y + dy }); }); ui.tg = { list, idx: 0, cb }; render(); }
+function showChar() {
+  const g = OD.g, p = g.p, d = p.d, L = [];
+  L.push([p.name + ' the ' + p.race + ' ' + p.cls, C.gold]); L.push('');
+  L.push('Level ' + p.lvl + '   Experience ' + Math.floor(p.exp) + '   Next level at ' + OD.expFor(p.lvl));
+  L.push('Hit points ' + p.hp + '/' + p.mhp + (p.mmp ? '   Mana ' + p.mp + '/' + p.mmp : '') + '   Armour class ' + d.ac);
+  L.push('Strength ' + d.str + '   Dexterity ' + d.dex + '   Constitution ' + p.st.con + '   Intellect ' + p.st.int);
+  L.push('To-hit ' + (d.th >= 0 ? '+' : '') + d.th + '   To-damage ' + (d.td >= 0 ? '+' : '') + d.td + '   Blows ' + d.blows + '   Shots ' + d.shots + '   Speed ' + (d.speed === 10 ? 'normal' : d.speed > 10 ? 'fast' : 'slow'));
+  L.push('Stealth ' + d.stealth + '   Digging ' + d.dig + '   Light radius ' + d.light + '   Food ' + Math.round(p.food / 150) + '%');
+  const ab = []; if (d.res.fire) ab.push('resist fire'); if (d.res.cold) ab.push('resist frost'); if (d.fa) ab.push('free action'); if (d.si) ab.push('see invisible'); if (d.regen) ab.push('regeneration'); if (d.sd) ab.push('slow digestion');
+  L.push('Abilities: ' + (ab.join(', ') || 'none')); L.push('');
+  L.push('Gold ' + p.gold + '   Deepest ' + g.maxDepth * 50 + ' ft   Turns ' + g.turn + '   Kills ' + g.kills + '   Score ' + OD.score()); L.push('Seed "' + g.seed + '"'); L.push('');
+  L.push(['Equipment', C.y]); for (const s of OD.SLOTS) L.push('  ' + (OD.SLOTNAME[s] + ':').padEnd(11) + (p.eq[s] ? OD.itemName(p.eq[s]) : '—'));
+  const kn = Object.keys(g.known).map(id => OD.KINDS[id]); if (kn.length) { L.push(''); L.push(['Known lore', C.y]); const by = {}; kn.forEach(k => (by[k.type] = by[k.type] || []).push(k.name)); for (const t in by) L.push('  ' + t.charAt(0).toUpperCase() + t.slice(1) + 's of: ' + by[t].join(', ')); }
+  ui.text = { lines: L, off: 0 }; render();
+}
+const HELP = [
+  ['ORRUNDEEP — how to play', C.gold], '',
+  'You are the @. Descend twenty levels, slay Morvane the Drowned King (K), and carry his crown back up.',
+  'Death is permanent. The dungeon is different every time (or the same, if you share a seed).', '',
+  ['Moving', C.y],
+  '  Arrow keys, numpad, or vi-keys:   y k u      7 8 9',
+  '                                    h . l      4 5 6        Shift + direction: run',
+  '                                    b j n      1 2 3        5 or . : wait a turn',
+  '  Walk into a monster to attack it, into a door to open it. Click the map to travel there.', '',
+  ['Getting things done', C.y],
+  '  z  auto-explore (stops when anything turns up)     >  <  take stairs (or travel to them)',
+  '  Tab  fight the nearest enemy (shoots if you hold a launcher)      R  rest until healed',
+  '  g  pick up        i  pack (pick an item for actions)        e  equipment / take off',
+  '  w  wield / wear   q  quaff potion    r  read scroll         E  eat',
+  '  f  fire launcher  v  throw           a  aim a wand          m  cast a spell (mages)',
+  '  s  search for traps   D  disarm      c  close door          T  tunnel (rubble, veins, rock)',
+  '  F  refuel lantern     x  look around C  character sheet     M  message log',
+  '  S  save and quit to title            Q  retire (after victory)       F2  scanlines on/off', '',
+  ['The map', C.y],
+  '  #  rock      .  floor      +  door      \'  open door      > <  stairs      ^  trap',
+  '  %  mineral vein      *  vein with gold (tunnel it!)      :  rubble      1-4  shops (surface)',
+  '  !  potion   ?  scroll   -  wand   =  ring   |  \\  /  weapons   }  launcher   {  ammo',
+  '  (  [  )  ]  armour   ~  light   ,  food   $  gold', '',
+  ['Things nobody tells you', C.y],
+  '  · Potions, scrolls, wands and rings are unknown until tried. Scrolls of Identify are cheap.',
+  '  · Your torch burns down. Carry spares, or buy a lantern and oil. Darkness is how most people die.',
+  '  · A Scroll of Homeward pulls you to the surface, and later back to your deepest level.',
+  '  · Flasks of oil are superb thrown weapons (v). Daggers and spears throw well too.',
+  '  · Letters in purple-backed cells are unique foes. They are worth fearing.',
+  '  · Hungry? Eat. Poisoned? Antidote, or wait it out. Outnumbered? Fight in a corridor.',
+  '  · Dwarves tunnel fast. A miner\'s pick makes anyone a miner. Gold veins pay for lanterns.',
+  '  · Worms multiply. Do not let them.', '',
+  ['About', C.y], '  Orrundeep is free and open source (MIT). No ads, no tracking; the game makes no network requests.',
+  '  It is an original game in the tradition of the 1980s dungeon-descent roguelikes.',
+];
+function showHelp() { ui.text = { lines: HELP, off: 0 }; render(); }
+function showLog() { const g = OD.g; const lines = g.msgs.map(m => [m.t + (m.x ? ' (x' + m.x + ')' : ''), m.c]); ui.text = { lines, off: 1e9 }; render(); }
+function showScores() {
+  const S = scores(), L = [['HALL OF THE DEAD', C.gold], ''];
+  if (!S.length) L.push(['Nobody has died here yet. Be the first.', C.gy]);
+  S.forEach((s, i) => { L.push([String(i + 1).padStart(2) + '. ' + String(s.s).padStart(7) + '  ' + s.n + ' the ' + s.r + ' ' + s.c + ' (L' + s.l + ')', s.w ? C.gold : C.w]); L.push(['              ' + (s.w ? 'won the crown' : 'killed by ' + s.by + ' at ' + s.d * 50 + ' ft') + ' · seed "' + s.seed + '"', C.dg]); });
+  ui.text = { lines: L, off: 0, title: true }; render();
+}
+
+/* ---------- input ---------- */
+const DIRKEY = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0], Home: [-1, -1], PageUp: [1, -1], End: [-1, 1], PageDown: [1, 1],
+  k: [0, -1], j: [0, 1], h: [-1, 0], l: [1, 0], y: [-1, -1], u: [1, -1], b: [-1, 1], n: [1, 1], '8': [0, -1], '2': [0, 1], '4': [-1, 0], '6': [1, 0], '7': [-1, -1], '9': [1, -1], '1': [-1, 1], '3': [1, 1] };
+const NAMES = ['Thrain', 'Brakka', 'Odrun', 'Kelda', 'Marn', 'Ysolt', 'Durik', 'Hesper', 'Varn', 'Sigga', 'Tolv', 'Ragna', 'Embla', 'Garm'];
+function dailySeed() { const d = new Date(); return 'daily-' + d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0'); }
+function startCreate(daily) { const u = new URLSearchParams(location.search).get('seed'); ui.create = { step: 0, race: null, cls: null, name: NAMES[Math.floor(Math.random() * NAMES.length)], seed: daily ? dailySeed() : (u || Math.random().toString(36).slice(2, 8)), daily, fresh: true }; ui.mode = 'create'; render(); }
+function key(k, shift) {
+  if (k === 'F2') { document.body.classList.toggle('crt'); store.set(LS.crt, document.body.classList.contains('crt') ? '1' : '0'); return; }
+  if (ui.auto) { stopAuto(); return; }
+  if (ui.mode === 'title') return keyTitle(k);
+  if (ui.mode === 'create') return keyCreate(k);
+  const g = OD.g;
+  if (ui.text) { const t = ui.text;
+    if (t.dead) { if (k === 'c' || k === 'C') return copy(shareText()); if (k === 'n' || k === 'N' || k === 'Enter') { ui.text = null; OD.fx.length = 0; ui.mode = 'title'; return render(); } }
+    if (k === 'ArrowDown' || k === 'j') t.off++; else if (k === 'ArrowUp' || k === 'k') t.off--; else if (k === 'PageDown' || k === ' ') t.off += t.per || 20; else if (k === 'PageUp') t.off -= t.per || 20;
+    else if (k === 'Escape' || k === 'Enter' || k === 'q') { if (t.dead) return; ui.text = null; if (t.title) ui.mode = 'title'; }
+    return render(); }
+  if (ui.menu) { const m = ui.menu; if (k === 'Escape') { ui.menu = null; if (m.onEsc) m.onEsc(); return after(); } m.onKey(k); return; }
+  if (g.dead) return onDeath();
+  if (ui.tg) { const t = ui.tg;
+    if (k === 'Escape') { ui.tg = null; return render(); }
+    if (k === 'Tab' || k === ' ' || k === '+') { t.idx = (t.idx + 1) % t.list.length; return render(); }
+    if (k === 'Enter' || k === 'f' || k === 't' || k === 'a' || k === 'v' || k === 'm') { const m = t.list[t.idx]; ui.tg = null; return t.cb({ x: m.x, y: m.y }); }
+    const d = DIRKEY[k]; if (d) { ui.tg = null; return t.cb({ x: g.p.x + d[0], y: g.p.y + d[1] }); } return; }
+  if (ui.dirCb) { const cb = ui.dirCb, d = DIRKEY[k]; ui.dirCb = null; if (d) return cb(d[0], d[1]); return render(); }
+  if (ui.look) { const L = ui.look, d = DIRKEY[k]; if (d) { L.x = Math.max(0, Math.min(W - 1, L.x + d[0] * (shift ? 5 : 1))); L.y = Math.max(0, Math.min(H - 1, L.y + d[1] * (shift ? 5 : 1))); } else if (k === 'Tab') { const ms = visMons(); if (ms.length) { L.i = ((L.i || 0) + 1) % ms.length; L.x = ms[L.i].x; L.y = ms[L.i].y; } } else ui.look = null; return render(); }
+  // play
+  const p = g.p; let d = DIRKEY[k]; const low = k.length === 1 ? k.toLowerCase() : k;
+  if (!d && shift && DIRKEY[low] && 'HJKLYUBN'.indexOf(k) >= 0) d = DIRKEY[low];
+  if (d) { if (shift) { let first = true; return auto(() => { const r = OD.runStep(d[0], d[1], first); first = false; return r; }); } return doAct(() => OD.move(d[0], d[1])); }
+  const T1 = ty => it => OD.kindOf(it).type === ty;
+  switch (k) {
+    case '.': case '5': case 'Clear': return doAct(() => true);
+    case 's': return doAct(() => OD.search());
+    case 'g': case ',': return doAct(() => OD.pickup());
+    case 'i': return showInv();
+    case 'e': return showEquip();
+    case 'w': return chooseItem('Wield or wear what?', it => OD.SLOTS.indexOf(OD.kindOf(it).type) >= 0, i => doAct(() => OD.wear(i)), 'You have nothing to wield or wear.');
+    case 't': return showEquip();
+    case 'd': return chooseItem('Drop what?', null, i => doAct(() => OD.drop(i)), 'You have nothing to drop.');
+    case 'q': return chooseItem('Quaff which potion?', T1('potion'), i => doAct(() => OD.quaff(i)), 'You have no potions.');
+    case 'r': return chooseItem('Read which scroll?', T1('scroll'), i => doAct(() => OD.read(i)), 'You have no scrolls.');
+    case 'E': return chooseItem('Eat what?', T1('food'), i => doAct(() => OD.eat(i)), 'You have nothing to eat.');
+    case 'a': return chooseItem('Aim which wand?', T1('wand'), i => askTarget(t => doAct(() => OD.aim(i, t))), 'You have no wands.');
+    case 'f': if (!p.eq.bow) return doAct(() => OD.fire({ x: p.x, y: p.y })); return askTarget(t => doAct(() => OD.fire(t)));
+    case 'v': return chooseItem('Throw what?', null, i => askTarget(t => doAct(() => OD.throwItem(i, t))), 'You have nothing to throw.');
+    case 'm': return showSpells();
+    case 'R': return doAct(() => OD.rest());
+    case 'c': return askDir((dx, dy) => doAct(() => OD.closeDoor(dx, dy)));
+    case 'T': return askDir((dx, dy) => doAct(() => OD.tunnel(dx, dy)));
+    case 'D': return askDir((dx, dy) => doAct(() => OD.disarm(dx, dy)));
+    case 'F': return doAct(() => OD.refuel());
+    case 'x': ui.look = { x: p.x, y: p.y }; return render();
+    case 'C': return showChar();
+    case 'M': case 'P': return showLog();
+    case '?': case 'F1': return showHelp();
+    case 'z': case 'o': return auto(() => OD.exploreStep());
+    case '>': if (g.map[p.y * W + p.x] === T.DOWN) return doAct(() => OD.stairs(1)); return auto(() => OD.travelStep(T.DOWN));
+    case '<': if (g.map[p.y * W + p.x] === T.UP) return doAct(() => OD.stairs(-1)); return auto(() => OD.travelStep(T.UP));
+    case 'Tab': { const ms = visMons(); if (!ms.length) return say('No enemy in view.'); const m = ms[0], dd = Math.max(Math.abs(m.x - p.x), Math.abs(m.y - p.y));
+      if (dd > 1 && p.eq.bow && p.inv.some(it => OD.kindOf(it).type === 'ammo' && OD.kindOf(it).ammo === OD.kindOf(p.eq.bow).ammo)) return doAct(() => OD.fire({ x: m.x, y: m.y }));
+      if (dd <= 1) return doAct(() => OD.move(m.x - p.x, m.y - p.y)); return fightStep(m); }
+    case 'S': persist(); ui.mode = 'title'; return render();
+    case 'Q': if (g.won) { OD.retire(); return after(); } return say('You may retire only after victory. (S saves and quits.)');
+  }
+}
+function fightStep(m) { const p = OD.g.p; doAct(() => OD.move(Math.sign(m.x - p.x), Math.sign(m.y - p.y)) || OD.move(Math.sign(m.x - p.x), 0) || OD.move(0, Math.sign(m.y - p.y))); }
+function keyTitle(k) {
+  k = k.toLowerCase();
+  if (k === 'n') return startCreate(false);
+  if (k === 'd') return startCreate(true);
+  if (k === 'c') { const s = store.get(LS.save); if (!s) return; try { OD.load(s); } catch (e) { console.error(e); store.del(LS.save); return render(); } ui.mode = 'play'; return render(); }
+  if (k === 'h') return showScoresTitle();
+  if (k === '?' || k === '/') return showHelpTitle();
+}
+function showScoresTitle() { ui.mode = 'titletext'; showScores(); }
+function showHelpTitle() { ui.mode = 'titletext'; ui.text = { lines: HELP, off: 0, title: true }; render(); }
+function keyCreate(k) {
+  const c = ui.create;
+  if (k === 'Escape') { if (c.step === 0) { ui.mode = 'title'; } else c.step--; return render(); }
+  if (c.step < 2) { const keys = Object.keys(c.step === 0 ? OD.RACES : OD.CLASSES), i = k.length === 1 ? k.toLowerCase().charCodeAt(0) - 97 : -1; if (keys[i]) { if (c.step === 0) c.race = keys[i]; else c.cls = keys[i]; c.step++; if (c.step === 2 && isTouch) { const n = window.prompt('Name your ' + c.race + ' ' + c.cls, c.name); if (n) c.name = n.slice(0, 16); return begin(); } } return render(); }
+  if (k === 'Enter') return begin();
+  if (k === 'Backspace') { c.name = c.fresh ? '' : c.name.slice(0, -1); c.fresh = false; return render(); }
+  if (k.length === 1 && /[\w '\-]/.test(k) && (c.fresh || c.name.length < 16)) { c.name = (c.fresh ? '' : c.name) + k; c.fresh = false; return render(); }
+}
+function begin() { const c = ui.create; OD.newGame({ seed: c.seed, race: c.race, cls: c.cls, name: c.name.trim() || 'Nameless' }); ui.mode = 'play'; ui.text = null; ui.menu = null; persist(); render(); }
+
+/* title-screen text overlays need a backdrop without a game */
+const _render = render;
+render = function () {
+  if (ui.mode === 'titletext') { ctx.fillStyle = '#0b0a08'; ctx.fillRect(0, 0, cv.width, cv.height); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; if (ui.text) drawText(ui.text); else { ui.mode = 'title'; drawTitle(); } return; }
+  _render();
+};
+window.addEventListener('keydown', e => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  let k = e.key; if (k === 'Shift' || k === 'Control' || k === 'Alt' || k === 'Meta' || k === 'CapsLock') return;
+  if (e.code && e.code.indexOf('Numpad') === 0 && /^Numpad[1-9]$/.test(e.code)) k = e.code.slice(6);
+  if (['Tab', ' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', 'Backspace', 'F1', 'F2', '/', "'"].indexOf(k) >= 0) e.preventDefault();
+  try { key(k, e.shiftKey); } catch (err) { console.error(err); if (OD.g) say('Something went wrong (' + err.message + '). Your game is saved.', C.r); }
+});
+function cellAt(e) { const r = cv.getBoundingClientRect(); return [Math.floor((e.clientX - r.left) / r.width * COLS), Math.floor((e.clientY - r.top) / r.height * ROWS)]; }
+cv.addEventListener('mousemove', e => { if (ui.mode !== 'play' || ui.menu || ui.text || !OD.g) return; const [x, y] = cellAt(e); const h = x < W && y >= MY && y < MY + H ? OD.describe(x, y - MY) : ''; if (h !== ui.hover) { ui.hover = h === 'Unknown.' ? '' : h; if (!ui.auto) render(); } });
+cv.addEventListener('click', e => {
+  cv.focus(); const [x, y] = cellAt(e);
+  if (ui.mode === 'title') return; if (ui.auto) return stopAuto();
+  if (ui.menu) { const k = ui.menu.rows && ui.menu.rows[y]; if (k) key(k); return; }
+  if (ui.text || ui.mode !== 'play' || !OD.g || OD.g.dead) return;
+  if (x >= W || y < MY || y >= MY + H) return; const p = OD.g.p, tx = x, ty = y - MY;
+  if (ui.tg) { const m = ui.tg.list.find(m => m.x === tx && m.y === ty), t = ui.tg; ui.tg = null; return t.cb(m ? { x: m.x, y: m.y } : { x: tx, y: ty }); }
+  if (ui.dirCb) { const cb = ui.dirCb; ui.dirCb = null; return cb(Math.sign(tx - p.x), Math.sign(ty - p.y)); }
+  if (tx === p.x && ty === p.y) return key('g');
+  if (Math.max(Math.abs(tx - p.x), Math.abs(ty - p.y)) <= 1) return doAct(() => OD.move(tx - p.x, ty - p.y));
+  auto(() => OD.goStep(tx, ty));
+});
+/* touch pad */
+(function () {
+  const pad = document.getElementById('pad');
+  const B = [['7', '↖'], ['8', '↑'], ['9', '↗'], ['z', 'explore'], ['Tab', 'fight'], ['g', 'get'], ['i', 'pack'], ['4', '←'], ['5', '·'], ['6', '→'], ['>', '>'], ['<', '<'], ['R', 'rest'], ['f', 'fire'], ['1', '↙'], ['2', '↓'], ['3', '↘'], ['m', 'magic'], ['e', 'equip'], ['Enter', 'ok'], ['Escape', 'esc'], ['?', '?'], ['n', 'N'], ['c', 'C'], ['a', 'a'], ['b', 'b'], ['d', 'd']];
+  for (const [k, label] of B) { const b = document.createElement('button'); b.textContent = label; b.addEventListener('click', e => { e.preventDefault(); try { key(k, false); } catch (err) { console.error(err); } }); pad.appendChild(b); }
+})();
+window.addEventListener('resize', resize);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(resize);
+resize(); cv.focus();
+</script>
+</body>
+</html>
